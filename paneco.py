@@ -356,12 +356,13 @@ def fetch_english_names(driver, products):
 
 # --- REPORT FORMATTING ---
 CATEGORY_LABELS = {
-    "low":  ("🔥", "שפל היסטורי",      "low"),
-    "good": ("✅", "מתחת לממוצע",       "good"),
-    "warn": ("⚠️", "ירידה - אך עדיין גבוה", "warn"),
-    "new":  ("🆕", "מוצרים חדשים",      "new"),
+    "low":   ("🔥", "שפל היסטורי",      "low"),
+    "atlow": ("💎", "במחיר הנמוך בכל הזמנים", "atlow"),
+    "good":  ("✅", "מתחת לממוצע",       "good"),
+    "warn":  ("⚠️", "ירידה - אך עדיין גבוה", "warn"),
+    "new":   ("🆕", "מוצרים חדשים",      "new"),
 }
-CATEGORY_ORDER = ["low", "good", "warn", "new"]
+CATEGORY_ORDER = ["low", "atlow", "good", "warn", "new"]
 
 def _fmt_money(p):
     if p is None:
@@ -417,14 +418,14 @@ REPORT_CSS = """
 :root {
   --bg: #fafaf9; --fg: #1c1917; --muted: #78716c;
   --card: #fff; --border: #e7e5e4; --soft: #f5f5f4;
-  --low: #dc2626; --good: #16a34a; --warn: #ca8a04; --new: #2563eb;
+  --low: #dc2626; --good: #16a34a; --warn: #ca8a04; --new: #2563eb; --gem: #0891b2;
   --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.04);
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0c0a09; --fg: #fafaf9; --muted: #a8a29e;
     --card: #1c1917; --border: #292524; --soft: #141210;
-    --low: #f87171; --good: #4ade80; --warn: #fbbf24; --new: #60a5fa;
+    --low: #f87171; --good: #4ade80; --warn: #fbbf24; --new: #60a5fa; --gem: #22d3ee;
     --shadow: 0 1px 2px rgba(0,0,0,0.35);
   }
 }
@@ -451,10 +452,11 @@ h1 { margin: 0; font-size: 1.625rem; font-weight: 700; letter-spacing: -0.01em; 
   font-size: 0.8125rem; font-weight: 500;
   background: var(--soft); border: 1px solid var(--border);
 }
-.chip-low  { color: var(--low); }
-.chip-good { color: var(--good); }
-.chip-warn { color: var(--warn); }
-.chip-new  { color: var(--new); }
+.chip-low   { color: var(--low); }
+.chip-atlow { color: var(--gem); }
+.chip-good  { color: var(--good); }
+.chip-warn  { color: var(--warn); }
+.chip-new   { color: var(--new); }
 section { margin-bottom: 2rem; }
 section h2 {
   font-size: 1rem; font-weight: 600; margin: 0 0 0.875rem;
@@ -475,10 +477,11 @@ section h2 .count {
   box-shadow: var(--shadow);
   border-inline-end-width: 4px;
 }
-.card-low  { border-inline-end-color: var(--low); }
-.card-good { border-inline-end-color: var(--good); }
-.card-warn { border-inline-end-color: var(--warn); }
-.card-new  { border-inline-end-color: var(--new); }
+.card-low   { border-inline-end-color: var(--low); }
+.card-atlow { border-inline-end-color: var(--gem); }
+.card-good  { border-inline-end-color: var(--good); }
+.card-warn  { border-inline-end-color: var(--warn); }
+.card-new   { border-inline-end-color: var(--new); }
 .card-main { min-width: 0; }
 .name { font-weight: 500; font-size: 1rem; word-break: break-word; }
 .name a { color: var(--fg); text-decoration: none; }
@@ -491,15 +494,17 @@ section h2 .count {
   font-size: 1.375rem; font-weight: 600;
   font-variant-numeric: tabular-nums; line-height: 1.2;
 }
-.card-low  .price-now { color: var(--low); }
-.card-good .price-now { color: var(--good); }
-.card-warn .price-now { color: var(--warn); }
-.card-new  .price-now { color: var(--new); }
+.card-low   .price-now { color: var(--low); }
+.card-atlow .price-now { color: var(--gem); }
+.card-good  .price-now { color: var(--good); }
+.card-warn  .price-now { color: var(--warn); }
+.card-new   .price-now { color: var(--new); }
 .sparkline { width: 100px; height: 24px; display: block; margin: 0.375rem 0 0 auto; opacity: 0.7; }
-.card-low  .sparkline { color: var(--low); }
-.card-good .sparkline { color: var(--good); }
-.card-warn .sparkline { color: var(--warn); }
-.card-new  .sparkline { color: var(--new); }
+.card-low   .sparkline { color: var(--low); }
+.card-atlow .sparkline { color: var(--gem); }
+.card-good  .sparkline { color: var(--good); }
+.card-warn  .sparkline { color: var(--warn); }
+.card-new   .sparkline { color: var(--new); }
 .wb-link {
   display: inline-block; margin-top: 0.5rem;
   font-size: 0.75rem; color: var(--muted); text-decoration: none;
@@ -615,7 +620,7 @@ def _card_html(it):
     wb_href = h(_wb_search_url(it["name"], it.get("url") or '', en))
     wb_node = f'<a class="wb-link" href="{wb_href}" target="_blank" rel="noopener">🔍 whiskybase</a>'
     parts = []
-    if it["category"] != "new" and it.get("last") is not None:
+    if it["category"] in ("low", "good", "warn") and it.get("last") is not None:
         parts.append(f'היה <bdi>{_fmt_money(it["last"])}</bdi>')
         cur = it.get("current")
         if cur is not None and it["last"]:
@@ -675,6 +680,8 @@ def generate_html_report(items, all_products, scanned_count, started_at, finishe
     for cat, lst in by_cat.items():
         if cat == "new":
             lst.sort(key=lambda x: x["name"])
+        elif cat == "atlow":
+            lst.sort(key=lambda x: x.get("below_max_pct", 0), reverse=True)
         else:
             lst.sort(key=lambda x: x.get("drop_pct", 0), reverse=True)
 
@@ -841,6 +848,23 @@ def run_bot_job(auto_open=False):
                 "count": stats["count"],
                 "history": history,
                 "drop_pct": drop_pct,
+            })
+
+        # 💎 במחיר הנמוך בכל הזמנים: מחיר נוכחי = השפל ההיסטורי, ובתנאי שהיתה תנודה (min!=max).
+        # חופף בכוונה עם 🔥 - בקבוק שירד היום לשפל יופיע בשני המקומות.
+        if (stats["min"] is not None and stats["max"] is not None
+                and effective <= stats["min"] and stats["min"] != stats["max"]):
+            counts["atlow"] += 1
+            below_max = (stats["max"] - effective) / stats["max"] if stats["max"] else 0.0
+            items.append({
+                "category": "atlow",
+                "key": key, "name": title, "english_name": english_name, "url": url,
+                "current": effective,
+                "last": stats["last_price"],
+                "min": stats["min"], "max": stats["max"], "avg": stats["avg"],
+                "count": stats["count"],
+                "history": history,
+                "below_max_pct": below_max,
             })
 
     finished = datetime.now()
