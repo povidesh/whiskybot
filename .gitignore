@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local data / runtime artifacts (not for publishing)
+whiskey_analytics.db
+whiskey_analytics.db-journal
+paneco.log
+paneco.log.*
+
+# Local copy of the report; the published copy lives in public/index.html
+paneco_report.html
+
+# OS
+.DS_Store
+Thumbs.db

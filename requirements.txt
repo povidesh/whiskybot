@@ -1,0 +1,5 @@
+selenium>=4.15
+webdriver-manager>=4.0
+beautifulsoup4>=4.12
+schedule>=1.2
+python-bidi>=0.4
