@@ -511,6 +511,21 @@ details summary {
   user-select: none;
 }
 details[open] summary { color: var(--fg); }
+.all-controls {
+  display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
+  margin-top: 1rem;
+}
+.all-controls input, .all-controls select {
+  font: inherit; font-size: 0.9375rem; color: var(--fg); background: var(--card);
+  border: 1px solid var(--border); border-radius: 8px; padding: 0.45rem 0.6rem;
+}
+.all-controls input {
+  flex: 1 1 12rem; min-width: 0;
+}
+.all-controls input:focus, .all-controls select:focus {
+  outline: none; border-color: var(--muted);
+}
+.all-empty { color: var(--muted); font-size: 0.9375rem; text-align: center; margin: 1.25rem 0; }
 .all-list { list-style: none; padding: 0; margin: 1rem 0 0; }
 .all-row {
   display: grid; grid-template-columns: 1fr auto auto auto; align-items: center;
@@ -527,6 +542,41 @@ footer {
   color: var(--muted); font-size: 0.8125rem; text-align: center;
   margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border);
 }
+"""
+
+# סינון לפי שם + מיון מחיר עבור "כל המוצרים במעקב" (vanilla, רץ בדפדפן)
+ALL_LIST_JS = r"""
+(function () {
+  var inp = document.getElementById('all-filter');
+  var sel = document.getElementById('all-sort');
+  var list = document.getElementById('all-list');
+  var count = document.getElementById('all-count');
+  var empty = document.getElementById('all-empty');
+  if (!list) return;
+  var rows = Array.prototype.slice.call(list.querySelectorAll('.all-row'));
+  function price(r) { var v = parseFloat(r.getAttribute('data-price')); return isNaN(v) ? Infinity : v; }
+  function apply() {
+    var q = (inp.value || '').trim().toLowerCase();
+    var mode = sel.value;
+    var ordered = rows.slice();
+    if (mode === 'price-asc') ordered.sort(function (a, b) { return price(a) - price(b); });
+    else if (mode === 'price-desc') ordered.sort(function (a, b) { return price(b) - price(a); });
+    else ordered.sort(function (a, b) {
+      return (a.getAttribute('data-name') || '').localeCompare(b.getAttribute('data-name') || '', 'he');
+    });
+    var visible = 0;
+    ordered.forEach(function (r) {
+      var show = !q || (r.getAttribute('data-name') || '').indexOf(q) >= 0;
+      r.style.display = show ? '' : 'none';
+      if (show) visible++;
+      list.appendChild(r);
+    });
+    if (count) count.textContent = visible;
+    if (empty) empty.hidden = visible !== 0;
+  }
+  inp.addEventListener('input', apply);
+  sel.addEventListener('change', apply);
+})();
 """
 
 def _card_html(it):
@@ -575,8 +625,10 @@ def _all_row_html(p):
     spark = sparkline_svg(p.get("history", []))
     wb_href = h(_wb_search_url(p["name"], url, en))
     wb_node = f'<a class="wb-link" href="{wb_href}" target="_blank" rel="noopener" title="חפש ב-whiskybase">🔍</a>'
+    search_blob = h(f'{p["name"]} {en}'.strip().lower())  # לסינון לפי שם (עברי+אנגלי)
+    price_attr = f'{p["current"]:.2f}' if p.get("current") is not None else ''
     return (
-        f'<li class="all-row">'
+        f'<li class="all-row" data-name="{search_blob}" data-price="{price_attr}">'
         f'<span class="all-name">{name_node}</span>'
         f'{wb_node}'
         f'{spark}'
@@ -646,14 +698,26 @@ def generate_html_report(items, all_products, scanned_count, started_at, finishe
         f'<div class="summary">{"".join(summary_chips) if summary_chips else ""}</div>\n'
         f'{"".join(sections)}\n'
         '<details>\n'
-        f'<summary>כל המוצרים במעקב (<bdi>{len(all_sorted)}</bdi>)</summary>\n'
-        f'<ul class="all-list">{all_rows}</ul>\n'
+        f'<summary>כל המוצרים במעקב (<bdi id="all-count">{len(all_sorted)}</bdi>'
+        f'<bdi id="all-total"> / {len(all_sorted)}</bdi>)</summary>\n'
+        '<div class="all-controls">\n'
+        '<input type="search" id="all-filter" placeholder="חיפוש לפי שם…" aria-label="חיפוש לפי שם" autocomplete="off">\n'
+        '<select id="all-sort" aria-label="מיון">\n'
+        '<option value="name">מיון: שם (א׳–ת׳)</option>\n'
+        '<option value="price-asc">מחיר: מהנמוך לגבוה</option>\n'
+        '<option value="price-desc">מחיר: מהגבוה לנמוך</option>\n'
+        '</select>\n'
+        '</div>\n'
+        f'<ul class="all-list" id="all-list">{all_rows}</ul>\n'
+        '<p class="all-empty" id="all-empty" hidden>אין מוצרים תואמים</p>\n'
         '</details>\n'
         '<footer>'
         f'נסרקו <bdi>{scanned_count}</bdi> מוצרים · עודכן ב-<bdi>{duration_s:.0f}s</bdi> · '
         f'דו"ח מתרענן אוטומטית כל שעה'
         '</footer>\n'
-        '</main>\n</body>\n</html>\n'
+        '</main>\n'
+        f'<script>{ALL_LIST_JS}</script>\n'
+        '</body>\n</html>\n'
     )
 
 # --- PUBLISH ---
