@@ -30,7 +30,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DB_PATH = SCRIPT_DIR / "whiskey_analytics.db"
 LOG_PATH = SCRIPT_DIR / "paneco.log"
 REPORT_PATH = SCRIPT_DIR / "paneco_report.html"
-PUBLISH_PATH = SCRIPT_DIR / "public" / "index.html"  # מה ש-Netlify מפרסם (publish dir = public)
+PUBLISH_PATH = SCRIPT_DIR / "docs" / "index.html"  # GitHub Pages מגיש מתיקיית docs/ ב-main
 
 # --- CONFIGURATION ---
 URL = "https://www.paneco.co.il/whiskey"
@@ -665,7 +665,7 @@ def _git(*args):
     )
 
 def publish_report():
-    """מפרסם את public/index.html ל-remote (Netlify מתפרס אוטומטית על push).
+    """מפרסם את docs/index.html ל-remote (GitHub Pages מתעדכן אוטומטית על push).
     Best-effort: אם אין remote מוגדר או ש-push נכשל - רושם אזהרה וממשיך."""
     if not PUBLISH_PATH.exists():
         return

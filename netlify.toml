@@ -1,5 +1,0 @@
-# Static site: no build step, just publish the pre-generated HTML in public/.
-# The bot writes public/index.html each run and pushes; Netlify redeploys on push.
-[build]
-  publish = "public"
-  command = ""

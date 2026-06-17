@@ -8,7 +8,7 @@ whiskey_analytics.db-journal
 paneco.log
 paneco.log.*
 
-# Local copy of the report; the published copy lives in public/index.html
+# Local copy of the report; the published copy lives in docs/index.html
 paneco_report.html
 
 # OS
