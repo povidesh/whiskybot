@@ -14,7 +14,6 @@ from datetime import datetime
 from html import escape as h
 from urllib.parse import quote_plus
 
-import schedule
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -687,7 +686,6 @@ def generate_html_report(items, all_products, scanned_count, started_at, finishe
         '<html lang="he" dir="rtl">\n<head>\n'
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        '<meta http-equiv="refresh" content="3600">\n'
         f'<title>{h(title)}</title>\n'
         f'<style>{REPORT_CSS}</style>\n'
         '</head>\n<body>\n<main>\n'
@@ -698,8 +696,9 @@ def generate_html_report(items, all_products, scanned_count, started_at, finishe
         f'<div class="summary">{"".join(summary_chips) if summary_chips else ""}</div>\n'
         f'{"".join(sections)}\n'
         '<details>\n'
-        f'<summary>כל המוצרים במעקב (<bdi id="all-count">{len(all_sorted)}</bdi>'
-        f'<bdi id="all-total"> / {len(all_sorted)}</bdi>)</summary>\n'
+        f'<summary>כל המוצרים במעקב '
+        f'<bdi dir="ltr">(<span id="all-count">{len(all_sorted)}</span> / {len(all_sorted)})</bdi>'
+        '</summary>\n'
         '<div class="all-controls">\n'
         '<input type="search" id="all-filter" placeholder="חיפוש לפי שם…" aria-label="חיפוש לפי שם" autocomplete="off">\n'
         '<select id="all-sort" aria-label="מיון">\n'
@@ -712,8 +711,7 @@ def generate_html_report(items, all_products, scanned_count, started_at, finishe
         '<p class="all-empty" id="all-empty" hidden>אין מוצרים תואמים</p>\n'
         '</details>\n'
         '<footer>'
-        f'נסרקו <bdi>{scanned_count}</bdi> מוצרים · עודכן ב-<bdi>{duration_s:.0f}s</bdi> · '
-        f'דו"ח מתרענן אוטומטית כל שעה'
+        f'נסרקו <bdi>{scanned_count}</bdi> מוצרים · עודכן ב-<bdi>{duration_s:.0f}s</bdi>'
         '</footer>\n'
         '</main>\n'
         f'<script>{ALL_LIST_JS}</script>\n'
@@ -838,24 +836,13 @@ def run_bot_job(auto_open=False):
             log.warning("Could not auto-open browser", exc_info=True)
 
 def safe_run_job(auto_open=False):
-    """עוטף את run_bot_job כדי שכישלון לא יהרוג את ה-scheduler."""
+    """עוטף את run_bot_job כך שכישלון נרשם ללוג במקום להפיל את התהליך."""
     try:
         run_bot_job(auto_open=auto_open)
     except Exception:
         log.exception("run_bot_job crashed")
         print("⚠️  Job failed - see paneco.log for traceback")
 
-# --- SCHEDULER ---
+# --- ENTRY POINT ---
 if __name__ == "__main__":
     safe_run_job(auto_open=True)
-
-    schedule.every().day.at("10:00").do(safe_run_job)
-    log.info("Scheduler started; daily run at 10:00")
-    print("Running schedule (Ctrl+C to stop)...")
-
-    while True:
-        try:
-            schedule.run_pending()
-        except Exception:
-            log.exception("schedule.run_pending crashed")
-        time.sleep(60)

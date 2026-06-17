@@ -3,8 +3,9 @@ __pycache__/
 *.pyc
 
 # Local data / runtime artifacts (not for publishing)
-whiskey_analytics.db
-whiskey_analytics.db-journal
+whiskey_analytics.db*
+*.db
+*.db.bak-*
 paneco.log
 paneco.log.*
 

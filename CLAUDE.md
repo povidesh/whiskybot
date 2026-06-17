@@ -15,16 +15,12 @@ pip install -r requirements.txt
 python paneco.py
 ```
 
-Behavior on launch:
-1. Runs one scrape immediately via `safe_run_job()`.
-2. Enters `schedule` loop, re-running daily at 10:00, polling every 60s.
-
-There is no CLI flag for a single-shot run — Ctrl+C after the initial job to abort the schedule.
+Behavior on launch: runs a single scrape via `safe_run_job(auto_open=True)` and exits. It's a one-shot script — schedule externally (Windows Task Scheduler / cron) for recurring runs.
 
 ## Architecture notes
 
-- **`run_bot_job(auto_open)`** orchestrates: `init_db()` → `scrape_current_prices()` → per product: `backfill_legacy()` → `get_product_stats()` → classify (new / historic-low / below-avg / "still above min") → `save_price()` → `generate_html_report()` → write `paneco_report.html`. `auto_open=True` only on the immediate startup run (opens the report in the default browser); scheduled runs just overwrite the file. The HTML has `<meta http-equiv="refresh" content="3600">` so an open tab self-refreshes hourly to pick up new data.
-- **`safe_run_job()`** wraps `run_bot_job()` so a scrape failure (Chrome crash, DOM change, network blip) logs a traceback and returns instead of killing the scheduler loop. The `while True` loop also catches `schedule.run_pending()` failures.
+- **`run_bot_job(auto_open)`** orchestrates: `init_db()` → `scrape_current_prices()` → per product: `backfill_legacy()` → `get_product_stats()` → classify (new / historic-low / below-avg / "still above min") → `save_price()` → `generate_html_report()` → write `paneco_report.html`. `auto_open=True` opens the report in the default browser after writing it.
+- **`safe_run_job()`** wraps `run_bot_job()` so a scrape failure (Chrome crash, DOM change, network blip) logs a traceback and exits cleanly instead of surfacing an unhandled exception.
 - **DB schema** (created/migrated by `init_db()`):
   `price_history(id, product_key, product_name, regular_price, special_price, effective_price, timestamp)` with index `idx_product_key`.
   - `product_key` is the **stable identifier**: `id:<data-product-id>` from the price box, falling back to `slug:<URL slug>` if the SKU attribute is missing. Always use this — never the display name — to look up history.
