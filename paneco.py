@@ -127,22 +127,32 @@ def backfill_legacy(product_key, product_name):
         return n
 
 def save_price(product_key, product_name, regular_price, special_price):
-    """שומר רשומת מחיר חדשה. effective_price = הנמוך בין רגיל למבצע."""
+    """שומר את מחיר היום (upsert לפי יום מקומי): מחליף רשומה קיימת של אותו יום.
+    כך ריצות חוזרות באותו יום לא מוסיפות רשומות ולא מזיזות את הבסיס (היום הקודם).
+    effective_price = הנמוך בין רגיל למבצע."""
     candidates = [p for p in (regular_price, special_price) if p is not None]
     effective = min(candidates) if candidates else None
     with db() as conn:
         c = conn.cursor()
+        c.execute("""DELETE FROM price_history
+                     WHERE product_key=?
+                       AND date(timestamp,'localtime')=date('now','localtime')""",
+                  (product_key,))
         c.execute("""INSERT INTO price_history
                      (product_key, product_name, regular_price, special_price, effective_price)
                      VALUES (?, ?, ?, ?, ?)""",
                   (product_key, product_name, regular_price, special_price, effective))
 
 def get_product_stats(product_key):
-    """מחזיר סטטיסטיקות על המוצר לפי effective_price."""
+    """מחזיר סטטיסטיקות על המוצר לפי effective_price.
+    last_price = המחיר האחרון מ*יום קודם* (לא היום) - זהו הבסיס לזיהוי ירידות,
+    כך שהוא יציב לאורך כל הריצות של אותו יום. min/max/avg/count על כל ההיסטוריה."""
     with db() as conn:
         c = conn.cursor()
         c.execute("""SELECT effective_price FROM price_history
-                     WHERE product_key = ? ORDER BY timestamp DESC LIMIT 1""", (product_key,))
+                     WHERE product_key = ?
+                       AND date(timestamp,'localtime') < date('now','localtime')
+                     ORDER BY timestamp DESC LIMIT 1""", (product_key,))
         last = c.fetchone()
         last_price = last[0] if last else None
         c.execute("""SELECT MIN(effective_price), MAX(effective_price), AVG(effective_price), COUNT(*)
@@ -475,6 +485,7 @@ section h2 .count {
 .name a:hover { text-decoration: underline; }
 .name-en { color: var(--muted); font-size: 0.8125rem; margin-top: 0.125rem; direction: ltr; text-align: start; word-break: break-word; }
 .stats { color: var(--muted); font-size: 0.8125rem; margin-top: 0.25rem; }
+.price-chg { color: var(--good); font-weight: 500; white-space: nowrap; }
 .card-side { text-align: end; }
 .price-now {
   font-size: 1.375rem; font-weight: 600;
@@ -532,9 +543,11 @@ details[open] summary { color: var(--fg); }
   gap: 0.75rem;
 }
 .all-row:last-child { border-bottom: none; }
-.all-name { font-size: 0.9375rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.all-name { font-size: 0.9375rem; min-width: 0; }
+.all-name .nm { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .all-name a { color: var(--fg); text-decoration: none; }
 .all-name a:hover { text-decoration: underline; }
+.all-stats { color: var(--muted); font-size: 0.75rem; margin-top: 0.15rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .all-list .sparkline { width: 80px; height: 20px; margin: 0; color: var(--muted); }
 .all-price { font-variant-numeric: tabular-nums; font-size: 0.9375rem; min-width: 4em; text-align: end; }
 footer {
@@ -578,6 +591,17 @@ ALL_LIST_JS = r"""
 })();
 """
 
+def _stats_line(mn, mx, count):
+    """שורת סטטיסטיקות: מינ׳ · מקס׳ · מדידות. משותפת לכרטיסים ולרשימת הכל."""
+    bits = []
+    if mn is not None:
+        bits.append(f'מינ׳ <bdi>{_fmt_money(mn)}</bdi>')
+    if mx is not None:
+        bits.append(f'מקס׳ <bdi>{_fmt_money(mx)}</bdi>')
+    if count:
+        bits.append(f'<bdi>{count}</bdi> מדידות')
+    return " · ".join(bits)
+
 def _card_html(it):
     emoji, _, cls = CATEGORY_LABELS[it["category"]]
     name_h = h(it["name"])
@@ -590,16 +614,22 @@ def _card_html(it):
     name_en_node = f'<div class="name-en">{h(en)}</div>' if en else ''
     wb_href = h(_wb_search_url(it["name"], it.get("url") or '', en))
     wb_node = f'<a class="wb-link" href="{wb_href}" target="_blank" rel="noopener">🔍 whiskybase</a>'
-    bits = []
+    parts = []
     if it["category"] != "new" and it.get("last") is not None:
-        bits.append(f'היה <bdi>{_fmt_money(it["last"])}</bdi>')
-    if it.get("min") is not None and it["category"] != "new":
-        bits.append(f'מינ׳ <bdi>{_fmt_money(it["min"])}</bdi>')
-    if it.get("avg") is not None and it["category"] != "new":
-        bits.append(f'ממוצע <bdi>{_fmt_money(it["avg"])}</bdi>')
-    if it.get("count"):
-        bits.append(f'<bdi>{it["count"]}</bdi> מדידות')
-    stats_node = " · ".join(bits)
+        parts.append(f'היה <bdi>{_fmt_money(it["last"])}</bdi>')
+        cur = it.get("current")
+        if cur is not None and it["last"]:
+            diff = it["last"] - cur
+            if diff > 0:
+                pct = it.get("drop_pct", 0) * 100
+                parts.append(
+                    f'<span class="price-chg">▼ <bdi>{_fmt_money(diff)}</bdi> '
+                    f'(<bdi>{pct:.0f}%</bdi>)</span>'
+                )
+    base_stats = _stats_line(it.get("min"), it.get("max"), it.get("count"))
+    if base_stats:
+        parts.append(base_stats)
+    stats_node = " · ".join(parts)
     return (
         f'<article class="card card-{cls}">'
         f'<div class="card-main">'
@@ -626,9 +656,11 @@ def _all_row_html(p):
     wb_node = f'<a class="wb-link" href="{wb_href}" target="_blank" rel="noopener" title="חפש ב-whiskybase">🔍</a>'
     search_blob = h(f'{p["name"]} {en}'.strip().lower())  # לסינון לפי שם (עברי+אנגלי)
     price_attr = f'{p["current"]:.2f}' if p.get("current") is not None else ''
+    stats_node = _stats_line(p.get("min"), p.get("max"), p.get("count"))
+    stats_html = f'<div class="all-stats">{stats_node}</div>' if stats_node else ''
     return (
         f'<li class="all-row" data-name="{search_blob}" data-price="{price_attr}">'
-        f'<span class="all-name">{name_node}</span>'
+        f'<div class="all-name"><span class="nm">{name_node}</span>{stats_html}</div>'
         f'{wb_node}'
         f'{spark}'
         f'<bdi class="all-price">{_fmt_money(p["current"])}</bdi>'
@@ -775,12 +807,14 @@ def run_bot_job(auto_open=False):
             continue
         effective = min(candidates)
 
-        backfill_legacy(key, title)
-        stats = get_product_stats(key)
-        history = get_recent_prices(key, limit=30) + [effective]
+        backfill_legacy(key, title)                # חייב לרוץ לפני save_price (בודק אם אין רשומות)
+        save_price(key, title, regular, special)    # upsert של מחיר היום (מחליף רשומת אותו יום)
+        stats = get_product_stats(key)              # הבסיס = המחיר מהיום הקודם, יציב לאורך היום
+        history = get_recent_prices(key, limit=30)  # כולל כבר את היום שנשמר
 
         all_products.append({"name": title, "english_name": english_name, "url": url,
-                             "current": effective, "history": history})
+                             "current": effective, "history": history,
+                             "min": stats["min"], "max": stats["max"], "count": stats["count"]})
 
         category = None
         if stats["last_price"] is None:
@@ -808,8 +842,6 @@ def run_bot_job(auto_open=False):
                 "history": history,
                 "drop_pct": drop_pct,
             })
-
-        save_price(key, title, regular, special)
 
     finished = datetime.now()
     html_str = generate_html_report(items, all_products, len(products), started, finished)
