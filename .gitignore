@@ -9,9 +9,5 @@ whiskey_analytics.db*
 paneco.log
 paneco.log.*
 
-# Local copy of the report; the published copy lives in docs/index.html
-paneco_report.html
-
 # OS
-.DS_Store
 Thumbs.db

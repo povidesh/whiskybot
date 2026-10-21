@@ -15,9 +15,7 @@ from html import escape as h
 from urllib.parse import quote_plus
 
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 
 # --- ENCODING SETUP ---
@@ -28,8 +26,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 SCRIPT_DIR = Path(__file__).resolve().parent
 DB_PATH = SCRIPT_DIR / "whiskey_analytics.db"
 LOG_PATH = SCRIPT_DIR / "paneco.log"
-REPORT_PATH = SCRIPT_DIR / "paneco_report.html"
-PUBLISH_PATH = SCRIPT_DIR / "docs" / "index.html"  # GitHub Pages מגיש מתיקיית docs/ ב-main
+REPORT_PATH = SCRIPT_DIR / "docs" / "index.html"  # GitHub Pages מגיש מתיקיית docs/ ב-main
 
 # --- CONFIGURATION ---
 URL = "https://www.paneco.co.il/whiskey"
@@ -52,9 +49,6 @@ def setup_logging():
 log = setup_logging()
 
 # --- DATABASE ---
-NEW_COLS = {'id', 'product_key', 'product_name',
-            'regular_price', 'special_price', 'effective_price', 'timestamp'}
-
 @contextmanager
 def db():
     conn = sqlite3.connect(DB_PATH)
@@ -65,16 +59,9 @@ def db():
         conn.close()
 
 def init_db():
-    """יוצר את הסכמה החדשה; אם נמצאה סכמה ישנה - שומר אותה בשם price_history_legacy למיגרציה."""
+    """יוצר את הסכמה אם חסרה."""
     with db() as conn:
         c = conn.cursor()
-        c.execute("PRAGMA table_info(price_history)")
-        cols = {row[1] for row in c.fetchall()}
-        if cols and cols != NEW_COLS:
-            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='price_history_legacy'")
-            if not c.fetchone():
-                c.execute("ALTER TABLE price_history RENAME TO price_history_legacy")
-                log.info("Renamed old price_history -> price_history_legacy for migration")
         c.execute('''CREATE TABLE IF NOT EXISTS price_history
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       product_key TEXT NOT NULL,
@@ -106,69 +93,62 @@ def save_english_name(product_key, english_name):
                        english_name=excluded.english_name, updated_at=CURRENT_TIMESTAMP""",
                   (product_key, english_name))
 
-def backfill_legacy(product_key, product_name):
+# הפונקציות הבאות מקבלות conn פתוח: run_bot_job מריץ את כל המוצרים בחיבור/טרנזקציה אחת.
+# (ה-DB יושב על כונן רשת - commit לכל מוצר עלה ~דקה לריצה.)
+def backfill_legacy(conn, product_key, product_name):
     """מעביר היסטוריה ישנה (לפי product_name) לטבלה החדשה תחת ה-product_key היציב. רץ פעם אחת לכל מוצר."""
-    with db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='price_history_legacy'")
-        if not c.fetchone():
-            return 0
-        c.execute("SELECT 1 FROM price_history WHERE product_key=? LIMIT 1", (product_key,))
-        if c.fetchone():
-            return 0
-        c.execute("""INSERT INTO price_history
-                     (product_key, product_name, regular_price, special_price, effective_price, timestamp)
-                     SELECT ?, product_name, price, price, price, timestamp
-                     FROM price_history_legacy WHERE product_name = ?""",
-                  (product_key, product_name))
-        n = c.rowcount
-        if n:
-            log.info(f"Backfilled {n} legacy rows for {product_key} ({product_name!r})")
-        return n
+    c = conn.cursor()
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='price_history_legacy'")
+    if not c.fetchone():
+        return 0
+    c.execute("SELECT 1 FROM price_history WHERE product_key=? LIMIT 1", (product_key,))
+    if c.fetchone():
+        return 0
+    c.execute("""INSERT INTO price_history
+                 (product_key, product_name, regular_price, special_price, effective_price, timestamp)
+                 SELECT ?, product_name, price, price, price, timestamp
+                 FROM price_history_legacy WHERE product_name = ?""",
+              (product_key, product_name))
+    n = c.rowcount
+    if n:
+        log.info(f"Backfilled {n} legacy rows for {product_key} ({product_name!r})")
+    return n
 
-def save_price(product_key, product_name, regular_price, special_price):
+def save_price(conn, product_key, product_name, regular_price, special_price, effective_price):
     """שומר את מחיר היום (upsert לפי יום מקומי): מחליף רשומה קיימת של אותו יום.
-    כך ריצות חוזרות באותו יום לא מוסיפות רשומות ולא מזיזות את הבסיס (היום הקודם).
-    effective_price = הנמוך בין רגיל למבצע."""
-    candidates = [p for p in (regular_price, special_price) if p is not None]
-    effective = min(candidates) if candidates else None
-    with db() as conn:
-        c = conn.cursor()
-        c.execute("""DELETE FROM price_history
-                     WHERE product_key=?
-                       AND date(timestamp,'localtime')=date('now','localtime')""",
-                  (product_key,))
-        c.execute("""INSERT INTO price_history
-                     (product_key, product_name, regular_price, special_price, effective_price)
-                     VALUES (?, ?, ?, ?, ?)""",
-                  (product_key, product_name, regular_price, special_price, effective))
+    כך ריצות חוזרות באותו יום לא מוסיפות רשומות ולא מזיזות את הבסיס (היום הקודם)."""
+    c = conn.cursor()
+    c.execute("""DELETE FROM price_history
+                 WHERE product_key=?
+                   AND date(timestamp,'localtime')=date('now','localtime')""",
+              (product_key,))
+    c.execute("""INSERT INTO price_history
+                 (product_key, product_name, regular_price, special_price, effective_price)
+                 VALUES (?, ?, ?, ?, ?)""",
+              (product_key, product_name, regular_price, special_price, effective_price))
 
-def get_product_stats(product_key):
+def get_product_stats(conn, product_key):
     """מחזיר סטטיסטיקות על המוצר לפי effective_price.
     last_price = המחיר האחרון מ*יום קודם* (לא היום) - זהו הבסיס לזיהוי ירידות,
     כך שהוא יציב לאורך כל הריצות של אותו יום. min/max/avg/count על כל ההיסטוריה."""
-    with db() as conn:
-        c = conn.cursor()
-        c.execute("""SELECT effective_price FROM price_history
-                     WHERE product_key = ?
-                       AND date(timestamp,'localtime') < date('now','localtime')
-                     ORDER BY timestamp DESC LIMIT 1""", (product_key,))
-        last = c.fetchone()
-        last_price = last[0] if last else None
-        c.execute("""SELECT MIN(effective_price), MAX(effective_price), AVG(effective_price), COUNT(*)
-                     FROM price_history WHERE product_key = ?""", (product_key,))
-        min_p, max_p, avg_p, count = c.fetchone()
+    c = conn.cursor()
+    c.execute("""SELECT effective_price FROM price_history
+                 WHERE product_key = ?
+                   AND date(timestamp,'localtime') < date('now','localtime')
+                 ORDER BY timestamp DESC LIMIT 1""", (product_key,))
+    last = c.fetchone()
+    last_price = last[0] if last else None
+    c.execute("""SELECT MIN(effective_price), MAX(effective_price), AVG(effective_price), COUNT(*)
+                 FROM price_history WHERE product_key = ?""", (product_key,))
+    min_p, max_p, avg_p, count = c.fetchone()
     return {"last_price": last_price, "min": min_p, "max": max_p, "avg": avg_p, "count": count}
 
-def get_recent_prices(product_key, limit=30):
+def get_recent_prices(conn, product_key, limit=30):
     """מחירים אחרונים בסדר כרונולוגי עולה (לסגנון sparkline)."""
-    with db() as conn:
-        c = conn.cursor()
-        c.execute("""SELECT effective_price FROM price_history
-                     WHERE product_key=? AND effective_price IS NOT NULL
-                     ORDER BY timestamp DESC LIMIT ?""", (product_key, limit))
-        rows = c.fetchall()
-    return list(reversed([r[0] for r in rows]))
+    rows = conn.execute("""SELECT effective_price FROM price_history
+                           WHERE product_key=? AND effective_price IS NOT NULL
+                           ORDER BY timestamp DESC LIMIT ?""", (product_key, limit)).fetchall()
+    return [r[0] for r in reversed(rows)]
 
 # --- PARSING HELPERS ---
 def _parse_price_text(text):
@@ -238,28 +218,25 @@ def extract_product(item):
     special = _extract_amount(special_el)
     final = _extract_amount(final_el)
 
-    if regular is not None and special is not None:
-        pass
-    elif special is not None:
+    if regular is None and special is None:
+        if final is None:
+            return None
+        regular = special = final
+    elif regular is None:
         regular = special
-    elif regular is not None:
+    elif special is None:
         special = regular
-    elif final is not None:
-        regular = final
-        special = final
-    else:
-        return None
 
-    if (regular is None or regular < 30) and (special is None or special < 30):
+    # מכאן שניהם לא None. מספר < 30 הוא כנראה נפח בקבוק ("70cl") ולא מחיר.
+    if regular < 30 and special < 30:
         fallback = _fallback_price_from_text(item)
         if fallback is None:
             return None
         regular = special = fallback
-    else:
-        if regular is not None and regular < 30:
-            regular = special
-        if special is not None and special < 30:
-            special = regular
+    elif regular < 30:
+        regular = special
+    elif special < 30:
+        special = regular
 
     return product_key, title, url, regular, special
 
@@ -277,8 +254,7 @@ def scrape_current_prices():
     products = {}
 
     try:
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
+        driver = webdriver.Chrome(options=options)  # Selenium Manager מוריד/מתאים chromedriver לבד
         driver.get(URL)
 
         try:
@@ -301,7 +277,7 @@ def scrape_current_prices():
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-        items = soup.select('.product-item') or soup.select('li.item.product.product-item')
+        items = soup.select('.product-item')
         log.info(f"Scanned {len(items)} items from website")
         print(f"Scanned {len(items)} items from website.")
 
@@ -355,14 +331,14 @@ def fetch_english_names(driver, products):
             continue
 
 # --- REPORT FORMATTING ---
+# המפתח משמש גם כמחלקת ה-CSS (card-low, chip-low...). סדר המילון = סדר הסעיפים בדו"ח.
 CATEGORY_LABELS = {
-    "low":   ("🔥", "שפל היסטורי",      "low"),
-    "atlow": ("💎", "במחיר הנמוך בכל הזמנים", "atlow"),
-    "good":  ("✅", "מתחת לממוצע",       "good"),
-    "warn":  ("⚠️", "ירידה - אך עדיין גבוה", "warn"),
-    "new":   ("🆕", "מוצרים חדשים",      "new"),
+    "low":   ("🔥", "שפל היסטורי"),
+    "atlow": ("💎", "במחיר הנמוך בכל הזמנים"),
+    "good":  ("✅", "מתחת לממוצע"),
+    "warn":  ("⚠️", "ירידה - אך עדיין גבוה"),
+    "new":   ("🆕", "מוצרים חדשים"),
 }
-CATEGORY_ORDER = ["low", "atlow", "good", "warn", "new"]
 
 def _fmt_money(p):
     if p is None:
@@ -608,7 +584,7 @@ def _stats_line(mn, mx, count):
     return " · ".join(bits)
 
 def _card_html(it):
-    emoji, _, cls = CATEGORY_LABELS[it["category"]]
+    cls = it["category"]
     name_h = h(it["name"])
     if it.get("url"):
         name_node = f'<a href="{h(it["url"])}" target="_blank" rel="noopener">{name_h}</a>'
@@ -686,24 +662,19 @@ def generate_html_report(items, all_products, scanned_count, started_at, finishe
             lst.sort(key=lambda x: x.get("drop_pct", 0), reverse=True)
 
     summary_chips = []
-    for cat in CATEGORY_ORDER:
-        n = len(by_cat.get(cat, []))
-        if n:
-            emoji, label, cls = CATEGORY_LABELS[cat]
-            summary_chips.append(
-                f'<span class="chip chip-{cls}">{emoji} <bdi>{n}</bdi> {h(label)}</span>'
-            )
-
     sections = []
-    for cat in CATEGORY_ORDER:
+    for cat, (emoji, label) in CATEGORY_LABELS.items():
         if cat not in by_cat:
             continue
-        emoji, label, cls = CATEGORY_LABELS[cat]
+        n = len(by_cat[cat])
+        summary_chips.append(
+            f'<span class="chip chip-{cat}">{emoji} <bdi>{n}</bdi> {h(label)}</span>'
+        )
         cards = "".join(_card_html(it) for it in by_cat[cat])
         sections.append(
-            f'<section class="section-{cls}">'
+            f'<section>'
             f'<h2><span class="emoji">{emoji}</span> {h(label)}'
-            f'<span class="count"><bdi>{len(by_cat[cat])}</bdi></span></h2>'
+            f'<span class="count"><bdi>{n}</bdi></span></h2>'
             f'<div class="grid">{cards}</div>'
             f'</section>'
         )
@@ -732,7 +703,7 @@ def generate_html_report(items, all_products, scanned_count, started_at, finishe
         f'<h1>{h(title.split(" — ")[0])}</h1>\n'
         f'<div class="meta">Paneco · <bdi>{finished_at.strftime("%d/%m/%Y %H:%M")}</bdi></div>\n'
         '</header>\n'
-        f'<div class="summary">{"".join(summary_chips) if summary_chips else ""}</div>\n'
+        f'<div class="summary">{"".join(summary_chips)}</div>\n'
         f'{"".join(sections)}\n'
         '<details>\n'
         f'<summary>כל המוצרים במעקב '
@@ -768,18 +739,20 @@ def _git(*args):
 def publish_report():
     """מפרסם את docs/index.html ל-remote (GitHub Pages מתעדכן אוטומטית על push).
     Best-effort: אם אין remote מוגדר או ש-push נכשל - רושם אזהרה וממשיך."""
-    if not PUBLISH_PATH.exists():
+    if not REPORT_PATH.exists():
         return
+    report = str(REPORT_PATH)
     try:
-        if not _git("rev-parse", "--is-inside-work-tree").returncode == 0:
+        if _git("rev-parse", "--is-inside-work-tree").returncode != 0:
             return  # לא repo - דלג בשקט
         if not _git("remote").stdout.strip():
             log.info("No git remote configured; skipping publish")
             return
-        _git("add", "--", str(PUBLISH_PATH))
-        if _git("diff", "--cached", "--quiet").returncode == 0:
+        _git("add", "--", report)
+        if _git("diff", "--cached", "--quiet", "--", report).returncode == 0:
             return  # אין שינוי לפרסם
-        _git("commit", "-m", f"report: {datetime.now():%Y-%m-%d %H:%M}")
+        # רק הדו"ח נכנס ל-commit, גם אם יש שינויים אחרים ב-staging
+        _git("commit", "-m", f"report: {datetime.now():%Y-%m-%d %H:%M}", "--", report)
         push = _git("push")
         if push.returncode != 0:
             log.warning("git push failed: %s", (push.stderr or push.stdout).strip())
@@ -803,86 +776,69 @@ def run_bot_job(auto_open=False):
     all_products = []
     counts = defaultdict(int)
 
-    for key, info in products.items():
-        title = info["name"]
-        url = info.get("url", "")
-        english_name = info.get("english_name", "")
-        regular = info["regular"]
-        special = info["special"]
-        candidates = [p for p in (regular, special) if p is not None]
-        if not candidates:
-            continue
-        effective = min(candidates)
+    # חיבור וטרנזקציה אחת לכל המוצרים: מהיר על כונן רשת, ואטומי - קריסה באמצע לא שומרת חצי ריצה
+    with db() as conn:
+        for key, info in products.items():
+            title = info["name"]
+            url = info.get("url", "")
+            english_name = info.get("english_name", "")
+            regular = info["regular"]
+            special = info["special"]
+            effective = min(regular, special)  # extract_product מבטיח ששניהם לא None
 
-        backfill_legacy(key, title)                # חייב לרוץ לפני save_price (בודק אם אין רשומות)
-        save_price(key, title, regular, special)    # upsert של מחיר היום (מחליף רשומת אותו יום)
-        stats = get_product_stats(key)              # הבסיס = המחיר מהיום הקודם, יציב לאורך היום
-        history = get_recent_prices(key, limit=30)  # כולל כבר את היום שנשמר
+            backfill_legacy(conn, key, title)                      # חייב לרוץ לפני save_price (בודק אם אין רשומות)
+            save_price(conn, key, title, regular, special, effective)  # upsert של מחיר היום (מחליף רשומת אותו יום)
+            stats = get_product_stats(conn, key)                   # הבסיס = המחיר מהיום הקודם, יציב לאורך היום
+            history = get_recent_prices(conn, key, limit=30)       # כולל כבר את היום שנשמר
 
-        all_products.append({"name": title, "english_name": english_name, "url": url,
-                             "current": effective, "history": history,
-                             "min": stats["min"], "max": stats["max"], "count": stats["count"]})
+            product = {"name": title, "english_name": english_name, "url": url,
+                       "current": effective, "history": history,
+                       "min": stats["min"], "max": stats["max"], "count": stats["count"]}
+            all_products.append(product)
 
-        category = None
-        if stats["last_price"] is None:
-            category = "new"
-        elif effective < stats["last_price"]:
-            if effective <= (stats["min"] or float('inf')):
-                category = "low"
-            elif stats["avg"] is not None and effective < stats["avg"]:
-                category = "good"
-            else:
-                category = "warn"
+            category = None
+            if stats["last_price"] is None:
+                category = "new"
+            elif effective < stats["last_price"]:
+                if effective <= (stats["min"] or float('inf')):
+                    category = "low"
+                elif stats["avg"] is not None and effective < stats["avg"]:
+                    category = "good"
+                else:
+                    category = "warn"
 
-        if category:
-            counts[category] += 1
-            drop_pct = 0.0
-            if stats["last_price"]:
-                drop_pct = (stats["last_price"] - effective) / stats["last_price"]
-            items.append({
-                "category": category,
-                "key": key, "name": title, "english_name": english_name, "url": url,
-                "current": effective,
-                "last": stats["last_price"],
-                "min": stats["min"], "max": stats["max"], "avg": stats["avg"],
-                "count": stats["count"],
-                "history": history,
-                "drop_pct": drop_pct,
-            })
+            if category:
+                counts[category] += 1
+                drop_pct = 0.0
+                if stats["last_price"]:
+                    drop_pct = (stats["last_price"] - effective) / stats["last_price"]
+                items.append({**product, "category": category,
+                              "last": stats["last_price"], "drop_pct": drop_pct})
 
-        # 💎 במחיר הנמוך בכל הזמנים: מחיר נוכחי = השפל ההיסטורי, ובתנאי שהיתה תנודה (min!=max).
-        # חופף בכוונה עם 🔥 - בקבוק שירד היום לשפל יופיע בשני המקומות.
-        if (stats["min"] is not None and stats["max"] is not None
-                and effective <= stats["min"] and stats["min"] != stats["max"]):
-            counts["atlow"] += 1
-            below_max = (stats["max"] - effective) / stats["max"] if stats["max"] else 0.0
-            items.append({
-                "category": "atlow",
-                "key": key, "name": title, "english_name": english_name, "url": url,
-                "current": effective,
-                "last": stats["last_price"],
-                "min": stats["min"], "max": stats["max"], "avg": stats["avg"],
-                "count": stats["count"],
-                "history": history,
-                "below_max_pct": below_max,
-            })
+            # 💎 במחיר הנמוך בכל הזמנים: מחיר נוכחי = השפל ההיסטורי, ובתנאי שהיתה תנודה (min!=max).
+            # חופף בכוונה עם 🔥 - בקבוק שירד היום לשפל יופיע בשני המקומות.
+            if (stats["min"] is not None and stats["max"] is not None
+                    and effective <= stats["min"] and stats["min"] != stats["max"]):
+                counts["atlow"] += 1
+                below_max = (stats["max"] - effective) / stats["max"] if stats["max"] else 0.0
+                items.append({**product, "category": "atlow", "below_max_pct": below_max})
 
     finished = datetime.now()
     html_str = generate_html_report(items, all_products, len(products), started, finished)
+    REPORT_PATH.parent.mkdir(exist_ok=True)
     REPORT_PATH.write_text(html_str, encoding="utf-8")
-    PUBLISH_PATH.parent.mkdir(exist_ok=True)
-    PUBLISH_PATH.write_text(html_str, encoding="utf-8")
     publish_report()
 
     summary_bits = []
-    if counts["low"]:  summary_bits.append(f"🔥 {counts['low']} historic low")
-    if counts["good"]: summary_bits.append(f"✅ {counts['good']} below avg")
-    if counts["warn"]: summary_bits.append(f"⚠️  {counts['warn']} above min")
-    if counts["new"]:  summary_bits.append(f"🆕 {counts['new']} new")
+    if counts["low"]:   summary_bits.append(f"🔥 {counts['low']} historic low")
+    if counts["atlow"]: summary_bits.append(f"💎 {counts['atlow']} at all-time low")
+    if counts["good"]:  summary_bits.append(f"✅ {counts['good']} below avg")
+    if counts["warn"]:  summary_bits.append(f"⚠️  {counts['warn']} above min")
+    if counts["new"]:   summary_bits.append(f"🆕 {counts['new']} new")
     summary = " · ".join(summary_bits) if summary_bits else "no opportunities"
 
     print(f"✅ {len(products)} products scanned · {summary}")
-    print(f"   report → {REPORT_PATH.name}")
+    print(f"   report → {REPORT_PATH.relative_to(SCRIPT_DIR)}")
     log.info(f"Job complete: {len(products)} products, {summary}")
 
     if auto_open:
